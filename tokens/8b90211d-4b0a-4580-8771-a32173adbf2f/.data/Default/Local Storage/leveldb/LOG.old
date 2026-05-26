@@ -1,6 +1,0 @@
-2025/12/13-15:34:25.606 5484 Reusing MANIFEST C:\imigraflow-backend\tokens\8b90211d-4b0a-4580-8771-a32173adbf2f\.data\Default\Local Storage\leveldb/MANIFEST-000001
-2025/12/13-15:34:25.611 5484 Recovering log #13
-2025/12/13-15:34:25.616 5484 Reusing old log C:\imigraflow-backend\tokens\8b90211d-4b0a-4580-8771-a32173adbf2f\.data\Default\Local Storage\leveldb/000013.log 
-2025/12/13-15:39:25.781 6750 Level-0 table #17: started
-2025/12/13-15:39:25.787 6750 Level-0 table #17: 13259 bytes OK
-2025/12/13-15:39:25.789 6750 Delete type=0 #13
