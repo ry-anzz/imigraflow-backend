@@ -11,7 +11,7 @@
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
     "@supabase/supabase-js": "^2.86.0",
-    "@wppconnect-team/wppconnect": "^1.37.7",
+    "@wppconnect-team/wppconnect": "^2.2.1",
     "axios": "^1.13.2",
     "body-parser": "^2.2.1",
     "cors": "^2.8.5",
