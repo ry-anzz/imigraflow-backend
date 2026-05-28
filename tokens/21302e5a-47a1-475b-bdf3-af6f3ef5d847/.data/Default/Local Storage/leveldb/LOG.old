@@ -1,3 +1,3 @@
-2026/05/27-14:12:23.446 5898 Reusing MANIFEST C:\Users\ryan.oliveira\Documents\imigraflow-backend\tokens\21302e5a-47a1-475b-bdf3-af6f3ef5d847\.data\Default\Local Storage\leveldb/MANIFEST-000001
-2026/05/27-14:12:23.455 5898 Recovering log #7
-2026/05/27-14:12:23.459 5898 Reusing old log C:\Users\ryan.oliveira\Documents\imigraflow-backend\tokens\21302e5a-47a1-475b-bdf3-af6f3ef5d847\.data\Default\Local Storage\leveldb/000007.log 
+2026/05/28-14:26:00.989 5e38 Reusing MANIFEST C:\Users\ryan.oliveira\Documents\imigraflow-backend\tokens\21302e5a-47a1-475b-bdf3-af6f3ef5d847\.data\Default\Local Storage\leveldb/MANIFEST-000001
+2026/05/28-14:26:00.997 5e38 Recovering log #24
+2026/05/28-14:26:01.002 5e38 Reusing old log C:\Users\ryan.oliveira\Documents\imigraflow-backend\tokens\21302e5a-47a1-475b-bdf3-af6f3ef5d847\.data\Default\Local Storage\leveldb/000024.log 

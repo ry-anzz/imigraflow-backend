@@ -43,36 +43,55 @@ function limparNumero(phone) {
 
 async function buscarDisponibilidade(supabase, tenantId) {
   try {
-    const hoje = new Date().toISOString();
+    const hoje = new Date();
+    // Ajuste para o fuso horário do Brasil (-3h)
+    const tzOffset = -3 * 60 * 60 * 1000;
+    const dataBuscaIso = new Date(hoje.getTime() + tzOffset).toISOString();
     
     // 1. Puxa do banco as "consultas" que já existem
     const { data: agendamentos } = await supabase
       .from("consultas")
       .select("data_hora")
       .eq("tenant_id", tenantId)
-      .gte("data_hora", hoje)
-      .neq("status", "Cancelado"); // Ignora os cancelados
+      .gte("data_hora", dataBuscaIso)
+      .neq("status", "Cancelado");
 
-    const marcados = agendamentos?.map(a => new Date(a.data_hora).getTime()) || [];
+    const marcados = agendamentos?.map(a => {
+        const d = new Date(a.data_hora);
+        return d.toISOString().slice(0, 16).replace('T', ' ');
+    }) || [];
 
-    // 2. Gera opções (Próximos 3 dias úteis às 10h e 14h)
+    // 2. Gera opções REAIS (das 09h às 17h)
     const horariosDisponiveis = [];
-    let diaAtual = new Date();
+    let diaAtual = new Date(hoje.getTime() + tzOffset);
     
-    for (let i = 1; i <= 3; i++) {
-      diaAtual.setDate(diaAtual.getDate() + 1);
-      // Pula finais de semana
-      if (diaAtual.getDay() === 0 || diaAtual.getDay() === 6) continue;
+    for (let i = 0; i <= 3; i++) {
+      if (diaAtual.getUTCDay() === 0 || diaAtual.getUTCDay() === 6) {
+         diaAtual.setUTCDate(diaAtual.getUTCDate() + 1);
+         continue; 
+      }
 
-      const op1 = new Date(diaAtual); op1.setHours(10, 0, 0, 0);
-      const op2 = new Date(diaAtual); op2.setHours(14, 0, 0, 0);
+      const ano = diaAtual.getUTCFullYear();
+      const mes = String(diaAtual.getUTCMonth() + 1).padStart(2, '0');
+      const dia = String(diaAtual.getUTCDate()).padStart(2, '0');
 
-      if (!marcados.includes(op1.getTime())) horariosDisponiveis.push(op1.toISOString().slice(0,16).replace('T', ' '));
-      if (!marcados.includes(op2.getTime())) horariosDisponiveis.push(op2.toISOString().slice(0,16).replace('T', ' '));
+      for (let hora = 9; hora <= 17; hora++) {
+        const horaStr = String(hora).padStart(2, '0');
+        const dataFormatada = `${ano}-${mes}-${dia} ${horaStr}:00`;
+
+        const horaRealOpcao = new Date(`${ano}-${mes}-${dia}T${horaStr}:00:00-03:00`);
+        
+        if (horaRealOpcao > hoje) { 
+            if (!marcados.includes(dataFormatada)) {
+                horariosDisponiveis.push(dataFormatada);
+            }
+        }
+      }
+      diaAtual.setUTCDate(diaAtual.getUTCDate() + 1);
     }
 
     return horariosDisponiveis.length > 0 
-      ? horariosDisponiveis 
+      ? horariosDisponiveis.slice(0, 8) 
       : ["Não há horários disponíveis para os próximos dias."];
   } catch (e) {
     console.error("Erro ao buscar agenda:", e);
@@ -80,36 +99,54 @@ async function buscarDisponibilidade(supabase, tenantId) {
   }
 }
 
-async function agendarConsulta(supabase, tenantId, contactId, dataHora, cpf) {
+// 🚀 FUNÇÃO ATUALIZADA PARA SALVAR O CADASTRO COMPLETO DO PACIENTE
+async function agendarConsulta(supabase, tenantId, contactId, dataHora, cpf, nomeCompleto, email, endereco) {
   try {
-    const isoDate = new Date(dataHora).toISOString();
+    const dataComFuso = new Date(`${dataHora.replace(' ', 'T')}:00-03:00`);
+    const isoDate = dataComFuso.toISOString();
     
-    // 1. Limpa o CPF (deixa só números)
     const cpfLimpo = cpf.replace(/\D/g, '');
 
-    // 2. Busca se o CPF já é paciente oficial
+    // Verifica se o paciente já existe pelo CPF
     let { data: paciente } = await supabase
       .from('pacientes')
       .select('id_paciente')
       .eq('cpf', cpfLimpo)
       .maybeSingle();
 
-    // 3. Se não existir, cria o paciente automaticamente
+    // Cria o paciente COM TODOS OS DADOS se for novo
     if (!paciente) {
-       const { data: contatoWhats } = await supabase.from('contacts').select('name, phone_number').eq('id', contactId).single();
-       const nomePaciente = contatoWhats?.name || "Paciente do WhatsApp";
+       // Pega o telefone do WhatsApp silenciosamente
+       const { data: contatoWhats } = await supabase.from('contacts').select('phone_number').eq('id', contactId).single();
        
+       const novoPacienteData = {
+         tenant_id: tenantId, 
+         nome: nomeCompleto,
+         cpf: cpfLimpo,
+         telefone: contatoWhats?.phone_number || "",
+         email: email || null,
+         endereco: endereco || null
+       };
+
        const { data: novoPaciente, error: erroCriar } = await supabase
          .from('pacientes')
-         .insert([{ nome: nomePaciente, cpf: cpfLimpo }])
+         .insert([novoPacienteData])
          .select('id_paciente')
          .single();
          
        if (erroCriar) throw erroCriar;
        paciente = novoPaciente;
+    } else {
+       // Opcional: Se ele já for paciente, podemos atualizar o email e endereço se ele forneceu novos
+       const updateData = {};
+       if (email) updateData.email = email;
+       if (endereco) updateData.endereco = endereco;
+       if (Object.keys(updateData).length > 0) {
+           await supabase.from('pacientes').update(updateData).eq('id_paciente', paciente.id_paciente);
+       }
     }
 
-    // 4. Salva a consulta na tabela do seu React vinculada ao ID do paciente
+    // Salva a consulta
     const { error } = await supabase
       .from("consultas")
       .insert([{
@@ -121,11 +158,9 @@ async function agendarConsulta(supabase, tenantId, contactId, dataHora, cpf) {
         status: 'Agendado'
       }]);
 
-    if (error) {
-      console.error("Erro banco agendarConsulta:", error);
-      throw error;
-    }
-    return { sucesso: true, mensagem: "Agendamento gravado e paciente vinculado com sucesso!" };
+    if (error) throw error;
+    
+    return { sucesso: true, mensagem: "Agendamento gravado e paciente cadastrado com sucesso!" };
   } catch (error) {
     console.error("Erro ao agendar:", error);
     return { sucesso: false, mensagem: "Falha ao gravar o agendamento no banco de dados." };
@@ -176,10 +211,7 @@ async function extrairDadosContato(supabase, tenantId, contactId, messageBody, c
 
 async function salvarMensagem(tenantId, message, fromMe = false, content = "") {
   const session = SESSIONS[tenantId];
-  if (!session || !session.supabase) {
-    console.error("❌ Erro: Sessão do Supabase não encontrada no Backend.");
-    return null;
-  }
+  if (!session || !session.supabase) return null;
   
   const sb = session.supabase;
   const phone = limparNumero(normalizarNumeroWhats(message) || message.to);
@@ -187,7 +219,7 @@ async function salvarMensagem(tenantId, message, fromMe = false, content = "") {
   const body = content || message.body;
 
   try {
-    let { data: contact, error: selectError } = await sb.from("contacts").select("id, name, email").eq("tenant_id", tenantId).eq("phone_number", phone).maybeSingle();
+    let { data: contact } = await sb.from("contacts").select("id, name, email").eq("tenant_id", tenantId).eq("phone_number", phone).maybeSingle();
       
     if (!contact) {
       const { data: newC, error: insertError } = await sb.from("contacts").insert({ tenant_id: tenantId, phone_number: phone, name: name, last_interaction_at: new Date().toISOString() }).select().maybeSingle();
@@ -203,7 +235,7 @@ async function salvarMensagem(tenantId, message, fromMe = false, content = "") {
 
     if (!contact) return null;
 
-    let { data: conversation, error: convSelectError } = await sb.from("conversations").select("*").eq("tenant_id", tenantId).eq("contact_id", contact.id).eq("status", "active").maybeSingle();
+    let { data: conversation } = await sb.from("conversations").select("*").eq("tenant_id", tenantId).eq("contact_id", contact.id).eq("status", "active").maybeSingle();
       
     if (!conversation) {
       const { data: newConv, error: convError } = await sb.from("conversations").insert({ tenant_id: tenantId, contact_id: contact.id, phone_number: `${phone}@c.us`, status: "active", is_ai_active: true, provider: "meta" }).select().maybeSingle();
@@ -217,7 +249,7 @@ async function salvarMensagem(tenantId, message, fromMe = false, content = "") {
 
     if (!conversation) return null;
 
-    const { data: msgSalva, error: msgError } = await sb.from("messages").insert({ conversation_id: conversation.id, tenant_id: tenantId, sender_type: fromMe ? "ai" : "customer", content: body, message_type: "text", provider: "meta", is_read: fromMe }).select().single();
+    const { data: msgSalva } = await sb.from("messages").insert({ conversation_id: conversation.id, tenant_id: tenantId, sender_type: fromMe ? "ai" : "customer", content: body, message_type: "text", provider: "meta", is_read: fromMe }).select().single();
     await sb.from("conversations").update({ last_message: body, last_message_at: new Date().toISOString(), unread_count: fromMe ? 0 : (conversation.unread_count || 0) + 1 }).eq("id", conversation.id);
     
     return { conversation, contact, messageId: msgSalva?.id };
@@ -265,17 +297,58 @@ app.get("/status", (req, res) => {
   res.json({ status: SESSIONS[activeTenant].status, qrcode: SESSIONS[activeTenant].qr });
 });
 
+// 🚀 A NOVA ROTA PARA DISPARAR A MENSAGEM DO REACT PARA O ZAP 🚀
 app.post("/send-message", async (req, res) => {
+  console.log("\n🚀 [BACKEND] Recebeu pedido do React para envio manual!");
+  
   const { conversationId, content, tenantId } = req.body;
   const session = SESSIONS[tenantId];
-  if (!session || !session.client) return res.status(400).json({ erro: "Desconectado" });
+
+  if (!session || !session.client) {
+    console.log("❌ [BACKEND] Erro: O Robô do WhatsApp não está ativo ou conectado.");
+    return res.status(400).json({ erro: "Desconectado" });
+  }
+
   try {
-    const { data: conv } = await session.supabase.from("conversations").select("phone_number").eq("id", conversationId).single();
+    const { data: conv } = await session.supabase
+      .from("conversations")
+      .select("phone_number")
+      .eq("id", conversationId)
+      .single();
+
     if (conv) {
-      await session.client.sendText(conv.phone_number, content);
-      res.json({ success: true });
-    } else res.status(404).json({ erro: "404" });
-  } catch (e) { res.status(500).json({ erro: e.message }); }
+      let numeroAlvo = conv.phone_number;
+      console.log(`📤 [BACKEND] Disparando para o número: ${numeroAlvo}`);
+      
+      try {
+        // Tentativa 1: O formato que está no banco
+        await session.client.sendText(numeroAlvo, content);
+        console.log("✅ [BACKEND] Sucesso! O WhatsApp entregou a mensagem.");
+        res.json({ success: true });
+        
+      } catch (erroEnvio) {
+        // Tentativa 2: O FALLBACK PARA CONTAS BUSINESS (LID)
+        // Números brasileiros normais têm uns 12 ou 13 dígitos. LIDs têm 15+.
+        if (numeroAlvo.includes('@c.us') && numeroAlvo.length > 18) {
+           console.log("⚠️ [BACKEND] O WhatsApp recusou. Tentando formato Business (@lid)...");
+           const numeroLid = numeroAlvo.replace("@c.us", "@lid");
+           
+           await session.client.sendText(numeroLid, content);
+           console.log("✅ [BACKEND] Sucesso! Mensagem entregue usando @lid.");
+           res.json({ success: true });
+        } else {
+           // Se não for LID, o erro foi outro mesmo (ex: sem internet no celular)
+           throw erroEnvio; 
+        }
+      }
+    } else {
+      console.log("❌ [BACKEND] Erro: Conversa não encontrada no banco.");
+      res.status(404).json({ erro: "404" });
+    }
+  } catch (e) {
+    console.error("❌ [BACKEND] WPPConnect recusou o envio:", e.message || e);
+    res.status(500).json({ erro: e.message });
+  }
 });
 
 async function iniciarWPP(tenantId) {
@@ -302,6 +375,12 @@ function start(client, tenantId) {
     if (message.isGroupMsg || message.fromMe || message.from === "status@broadcast") return;
     if (!message.body || typeof message.body !== 'string' || message.body === 'undefined') return;
 
+    if (message.type !== 'chat') {
+      const whatsappId = normalizarNumeroWhats(message) || message.from;
+      await client.sendText(whatsappId, "Desculpe, como sou um assistente virtual, ainda *só consigo entender mensagens de texto*. Poderia digitar o que você precisa? 😅");
+      return;
+    }
+
     const connectedAt = SESSIONS[tenantId]?.connectedAt;
     const messageTimestamp = message.timestamp * 1000;
     if (!connectedAt || messageTimestamp < connectedAt) return;
@@ -326,14 +405,20 @@ function start(client, tenantId) {
     try {
       const { data: historyData } = await session.supabase.from("messages").select("id, sender_type, content, created_at").eq("conversation_id", conversation.id).order("created_at", { ascending: false }).limit(8);
       const cleanHistory = (historyData || []).filter((m) => m.id !== messageId).reverse().map((msg) => ({ role: msg.sender_type === "ai" ? "model" : "user", parts: [{ text: msg.content }] }));
-      const { data: aiConfig } = await session.supabase.from("ai_configurations").select("*").eq("tenant_id", tenantId).maybeSingle();
+      
+      const { data: aiConfig } = await session.supabase.from("configuracoes").select("*").eq("tenant_id", tenantId).maybeSingle();
 
-      const businessName = aiConfig?.business_name || "Nossa Clínica";
+      const businessName = aiConfig?.nome_clinica || "Nossa Clínica";
       const businessDescription = aiConfig?.business_description || "Somos especialistas em atendimento médico.";
-      const missingName = !contact.name || contact.name === contact.phone_number;
+      const promptPersonalizado = aiConfig?.system_prompt || "Seja profissional, educado e claro.";
+      
+      const askNameConfig = aiConfig?.ask_name ?? true;
+      const missingName = askNameConfig && (!contact.name || contact.name === contact.phone_number);
 
-      // 🧠 PROMPT ESTRATÉGICO
-      let systemPrompt = `VOCÊ É O ASSISTENTE VIRTUAL DA EMPRESA ${businessName}.\nSOBRE: ${businessDescription}\nTOM: Profissional e direto.\n`;
+      // 🧠 PROMPT ESTRATÉGICO ATUALIZADO
+      let systemPrompt = `VOCÊ É O ASSISTENTE VIRTUAL DA EMPRESA: ${businessName}.\n`;
+      systemPrompt += `SOBRE A CLÍNICA: ${businessDescription}\n`;
+      systemPrompt += `SUAS INSTRUÇÕES DE COMPORTAMENTO: ${promptPersonalizado}\n\n`;
       
       if (missingName) {
         systemPrompt += `AÇÃO OBRIGATÓRIA: Cumprimente e peça O NOME do cliente antes de seguir.\n`;
@@ -341,15 +426,20 @@ function start(client, tenantId) {
         systemPrompt += `
 REGRAS DE OURO PARA AGENDAMENTO:
 1. Se o cliente pedir para marcar consulta, use a ferramenta 'buscarDisponibilidade'.
-2. Apresente os horários de forma amigável e pergunte qual ele prefere.
-3. Se o cliente escolher o horário, OBRIGATORIAMENTE peça o CPF dele.
-4. SÓ use a ferramenta 'agendarConsulta' QUANDO tiver a Data/Hora escolhida E o CPF do cliente.
-5. Confirme o sucesso APENAS após a ferramenta retornar resultado positivo.
-6. Se o cliente se irritar ou pedir humano, responda: [TRANSFER_HUMAN]
+2. Apresente os horários e pergunte qual ele prefere.
+3. Se ele escolher um horário, para realizar o CADASTRO, você DEVE solicitar educadamente (caso ainda não tenha no histórico):
+   - Nome Completo
+   - CPF
+   - E-mail (Avise que é Opcional)
+   - Endereço (Avise que é Opcional)
+4. O Telefone NÃO precisa pedir, o sistema captura automaticamente do WhatsApp.
+5. SÓ use a ferramenta 'agendarConsulta' QUANDO tiver a Data/Hora escolhida, o Nome Completo e o CPF.
+6. Confirme o sucesso APENAS após a ferramenta retornar resultado positivo.
+7. Se o cliente se irritar ou pedir humano, responda: [TRANSFER_HUMAN]
 `;
       }
 
-      // 🛠️ DEFINIÇÃO DAS FERRAMENTAS PARA O GEMINI
+      // 🛠️ FERRAMENTAS DO GEMINI ATUALIZADAS
       const tools = [{
         functionDeclarations: [
           {
@@ -358,14 +448,17 @@ REGRAS DE OURO PARA AGENDAMENTO:
           },
           {
             name: "agendarConsulta",
-            description: "Grava a consulta no banco de dados assim que o paciente fornecer o CPF e escolher o horário.",
+            description: "Grava a consulta e cadastra o paciente completo no banco de dados.",
             parameters: {
               type: "object",
               properties: {
-                dataHora: { type: "string", description: "Data/Hora escolhida no formato 'YYYY-MM-DD HH:mm'" },
-                cpf: { type: "string", description: "CPF do cliente contendo 11 dígitos numéricos." }
+                dataHora: { type: "string", description: "Data/Hora exata (YYYY-MM-DD HH:mm)" },
+                cpf: { type: "string", description: "CPF numérico (11 dígitos)" },
+                nomeCompleto: { type: "string", description: "Nome completo do paciente" },
+                email: { type: "string", description: "E-mail do paciente (se ele forneceu)" },
+                endereco: { type: "string", description: "Endereço do paciente (se ele forneceu)" }
               },
-              required: ["dataHora", "cpf"]
+              required: ["dataHora", "cpf", "nomeCompleto"]
             }
           }
         ]
@@ -381,26 +474,60 @@ REGRAS DE OURO PARA AGENDAMENTO:
       const chat = chatModel.startChat({ history: cleanHistory });
 
       console.log(`🤖 Processando intenção do usuário...`);
-      let gptResponse = await chat.sendMessage(message.body);
+      let gptResponse;
+      let maxTentativas = 3;
+
+      for (let i = 1; i <= maxTentativas; i++) {
+        try {
+          gptResponse = await chat.sendMessage(message.body);
+          break; 
+        } catch (err) {
+          if (err.status === 503 && i < maxTentativas) {
+            console.log(`⏳ Servidor do Google cheio. Tentativa ${i}/${maxTentativas}...`);
+            await sleep(2000);
+          } else {
+            throw err; 
+          }
+        }
+      }
       
-      // 🕵️‍♂️ VERIFICA SE A IA CHAMOU ALGUMA FERRAMENTA
       const functionCalls = gptResponse.response.functionCalls();
       
       if (functionCalls && functionCalls.length > 0) {
         const call = functionCalls[0];
-        console.log(`⚙️  A IA decidiu usar a ferramenta: [${call.name}]`);
+        console.log(`⚙️  A IA usou a ferramenta: [${call.name}] com:`, call.args);
         
         let toolResult;
         if (call.name === "buscarDisponibilidade") {
           toolResult = await buscarDisponibilidade(session.supabase, tenantId);
         } else if (call.name === "agendarConsulta") {
-          toolResult = await agendarConsulta(session.supabase, tenantId, contact.id, call.args.dataHora, call.args.cpf);
+          toolResult = await agendarConsulta(
+            session.supabase, 
+            tenantId, 
+            contact.id, 
+            call.args.dataHora, 
+            call.args.cpf, 
+            call.args.nomeCompleto, 
+            call.args.email, 
+            call.args.endereco
+          );
         }
 
-        // Devolve o resultado do Banco de Dados para a IA gerar a resposta final
-        gptResponse = await chat.sendMessage([{
-          functionResponse: { name: call.name, response: { content: toolResult } }
-        }]);
+        for (let i = 1; i <= maxTentativas; i++) {
+          try {
+            gptResponse = await chat.sendMessage([{
+              functionResponse: { name: call.name, response: { content: toolResult } }
+            }]);
+            break;
+          } catch (err) {
+            if (err.status === 503 && i < maxTentativas) {
+              console.log(`⏳ Servidor cheio (Retorno Ferramenta). Tentativa ${i}/${maxTentativas}...`);
+              await sleep(2000);
+            } else {
+              throw err;
+            }
+          }
+        }
       }
 
       const respostaIA = gptResponse.response.text().trim();
